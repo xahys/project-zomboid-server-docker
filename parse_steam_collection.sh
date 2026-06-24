@@ -91,6 +91,7 @@ show_cache_only_error() {
     echo -e "${YELLOW}║                                                                            ║${NC}"
     echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
+    return 1
 }
 
 # Функция для получения HTML-страницы (silent mode) с проверкой на блокировку
@@ -100,27 +101,22 @@ get_page_silent() {
     local temp_output="$TEMP_DIR/temp_output.txt"
     
     # Выполняем запрос и сохраняем ответ
-    curl -s -L \
+    local http_code=$(curl -s -L -o "$temp_output" \
         -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
         -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
         -H "Accept-Language: en-US,en;q=0.9" \
         -H "Cache-Control: no-cache" \
         -w "%{http_code}" \
-        "$url" 2>/dev/null > "$temp_output"
-    
-    # Получаем HTTP код из последней строки
-    local http_code=$(tail -n1 "$temp_output")
-    # Удаляем HTTP код из файла
-    head -n -1 "$temp_output" > "$output_file" 2>/dev/null
+        "$url" 2>/dev/null)
     
     # Проверяем HTTP код
     if [ "$http_code" = "429" ] || [ "$http_code" = "403" ]; then
-        # Rate limiting или блокировка
         RATE_LIMIT=1
         return 1
     fi
     
-    if [ "$http_code" = "200" ] && [ -f "$output_file" ] && [ -s "$output_file" ]; then
+    if [ "$http_code" = "200" ] && [ -f "$temp_output" ] && [ -s "$temp_output" ]; then
+        cp "$temp_output" "$output_file"
         return 0
     else
         return 1
@@ -131,26 +127,25 @@ get_page_silent() {
 get_collection_page() {
     local url="$1"
     local output_file="$2"
-    
     local temp_output="$TEMP_DIR/temp_collection.txt"
+    
     sleep 3
-    curl -s -L \
+    
+    local http_code=$(curl -s -L -o "$temp_output" \
         -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
         -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
         -H "Accept-Language: en-US,en;q=0.9" \
         -H "Cache-Control: no-cache" \
         -w "%{http_code}" \
-        "$url" 2>/dev/null > "$temp_output"
-    
-    local http_code=$(tail -n1 "$temp_output")
-    head -n -1 "$temp_output" > "$output_file" 2>/dev/null
+        "$url" 2>/dev/null)
     
     if [ "$http_code" = "429" ] || [ "$http_code" = "403" ]; then
         RATE_LIMIT=1
         return 1
     fi
     
-    if [ "$http_code" = "200" ] && [ -f "$output_file" ] && [ -s "$output_file" ]; then
+    if [ "$http_code" = "200" ] && [ -f "$temp_output" ] && [ -s "$temp_output" ]; then
+        cp "$temp_output" "$output_file"
         return 0
     else
         return 1
