@@ -133,7 +133,7 @@ get_collection_page() {
     local output_file="$2"
     
     local temp_output="$TEMP_DIR/temp_collection.txt"
-    
+    sleep 3
     curl -s -L \
         -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
         -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
