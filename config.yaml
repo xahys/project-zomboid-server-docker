@@ -1,0 +1,6 @@
+collection: "https://steamcommunity.com/sharedfiles/filedetails/?id=3751011995"
+
+# Синхронизация Mod ID для предметов с несколькими вариантами
+# Используйте, если для одного Workshop ID существует несколько Mod ID
+syncmod:
+  - 2761200458 : "YakiHS"
