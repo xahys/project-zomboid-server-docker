@@ -287,7 +287,7 @@ get_mod_page() {
         show_cache_only_error "$workshop_id"
         return 1
     fi
-    
+    sleep 3
     # Если нет - скачиваем
     log_info "  [DOWNLOAD] Загрузка мода $workshop_id..."
     local mod_url="https://steamcommunity.com/sharedfiles/filedetails/?id=$workshop_id"
@@ -423,9 +423,9 @@ parse_collection() {
     for workshop_id in "${workshop_ids[@]}"; do
         count=$((count + 1))
         PROCESSED_ITEMS=$count
-        
         echo -e "\n${BLUE}[$count/$TOTAL_ITEMS]${NC} Обработка Workshop ID: $workshop_id"
-        
+        sleep 3
+
         # Проверяем syncmod
         local selected_mod_id=""
         if [[ -n "${syncmod_map[$workshop_id]}" ]]; then
