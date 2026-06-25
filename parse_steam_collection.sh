@@ -162,7 +162,7 @@ extract_workshop_id_from_url() {
     fi
 }
 
-# Функция для извлечения всех Workshop ID из коллекции
+# Функция для извлечения всех Workshop ID из коллекции (только реальные предметы)
 extract_workshop_ids_from_collection() {
     local html_file="$1"
     
@@ -173,24 +173,25 @@ extract_workshop_ids_from_collection() {
     local html=$(cat "$html_file" 2>/dev/null | tr -d '\000')
     local ids=()
     
-    # Метод 1: data-publishedfileid
-    local ids1=$(echo "$html" | grep -oP 'data-publishedfileid="\K\d+' | sort -u 2>/dev/null)
-    for id in $ids1; do
+    # Ищем только элементы с классом collectionItem (реальные предметы)
+    # Сначала ищем блоки collectionItem
+    local item_blocks=$(echo "$html" | grep -oP 'id="sharedfile_\K\d+' | sort -u 2>/dev/null)
+    for id in $item_blocks; do
         [ -n "$id" ] && ids+=("$id")
     done
     
-    # Метод 2: ссылки
+    # Если не нашли через id, ищем data-publishedfileid внутри collectionItem
     if [ ${#ids[@]} -eq 0 ]; then
-        local ids2=$(echo "$html" | grep -oP 'href="https://steamcommunity.com/sharedfiles/filedetails/\?id=\d+"' | grep -oP 'id=\K\d+' | sort -u 2>/dev/null)
-        for id in $ids2; do
+        local ids1=$(echo "$html" | grep -oP 'class="collectionItem".*?data-publishedfileid="\K\d+' | sort -u 2>/dev/null)
+        for id in $ids1; do
             [ -n "$id" ] && ids+=("$id")
         done
     fi
     
-    # Метод 3: JSON
+    # Если все еще пусто - ищем все data-publishedfileid
     if [ ${#ids[@]} -eq 0 ]; then
-        local ids3=$(echo "$html" | grep -oP '"publishedfileid":"\K\d+' | sort -u 2>/dev/null)
-        for id in $ids3; do
+        local ids2=$(echo "$html" | grep -oP 'data-publishedfileid="\K\d+' | sort -u 2>/dev/null)
+        for id in $ids2; do
             [ -n "$id" ] && ids+=("$id")
         done
     fi
@@ -254,6 +255,10 @@ extract_mod_id_from_mod_page() {
         if [[ "$id" =~ ^[0-9]+$ ]] && [ ${#id} -lt 5 ]; then
             continue
         fi
+        # Пропускаем явно мусорные
+        if [[ "$id" =~ ^[a-zA-Z]$ ]]; then
+            continue
+        fi
         filtered_ids+=("$id")
     done
     
@@ -271,6 +276,7 @@ get_mod_page() {
     local workshop_id="$1"
     local mod_dir="$MOD_HTML_DIR/$workshop_id"
     local mod_file="$mod_dir/index.html"
+    local was_cached=0
     
     mkdir -p "$mod_dir"
     
@@ -278,7 +284,8 @@ get_mod_page() {
     if [ -f "$mod_file" ] && [ -s "$mod_file" ]; then
         log_info "  [CACHE] Используем кэш: $mod_file"
         CACHED_ITEMS=$((CACHED_ITEMS + 1))
-        echo "$mod_file"
+        was_cached=1
+        echo "$mod_file|$was_cached"
         return 0
     fi
     
@@ -287,14 +294,16 @@ get_mod_page() {
         show_cache_only_error "$workshop_id"
         return 1
     fi
-    sleep 3
-    # Если нет - скачиваем
+    
+    # Если нет - скачиваем (с задержкой)
     log_info "  [DOWNLOAD] Загрузка мода $workshop_id..."
+    sleep 3
     local mod_url="https://steamcommunity.com/sharedfiles/filedetails/?id=$workshop_id"
     
     if get_page_silent "$mod_url" "$mod_file"; then
         DOWNLOADED_ITEMS=$((DOWNLOADED_ITEMS + 1))
-        echo "$mod_file"
+        was_cached=0
+        echo "$mod_file|$was_cached"
         return 0
     else
         if [ $RATE_LIMIT -eq 1 ]; then
@@ -392,7 +401,7 @@ parse_collection() {
         log_success "Страница коллекции сохранена: $collection_file"
     fi
     
-    # Извлекаем все Workshop ID из коллекции
+    # Извлекаем все Workshop ID из коллекции (только реальные предметы)
     local workshop_ids=($(extract_workshop_ids_from_collection "$collection_file"))
     
     if [ ${#workshop_ids[@]} -eq 0 ]; then
@@ -424,8 +433,7 @@ parse_collection() {
         count=$((count + 1))
         PROCESSED_ITEMS=$count
         echo -e "\n${BLUE}[$count/$TOTAL_ITEMS]${NC} Обработка Workshop ID: $workshop_id"
-        sleep 3
-
+        
         # Проверяем syncmod
         local selected_mod_id=""
         if [[ -n "${syncmod_map[$workshop_id]}" ]]; then
@@ -433,11 +441,21 @@ parse_collection() {
             log_info "  [SYNC] Используем syncmod: $selected_mod_id"
         else
             # Получаем страницу мода (из кэша или скачиваем)
-            local mod_file=$(get_mod_page "$workshop_id")
+            local mod_result=$(get_mod_page "$workshop_id")
+            
+            if [ -z "$mod_result" ]; then
+                ERROR_COUNT=$((ERROR_COUNT + 1))
+                log_warn "  [SKIP] Пропускаем мод $workshop_id (не удалось получить страницу)"
+                continue
+            fi
+            
+            # Разбираем результат: файл|был_в_кэше
+            local mod_file="${mod_result%|*}"
+            local was_cached="${mod_result#*|}"
             
             if [ -z "$mod_file" ] || [ ! -f "$mod_file" ]; then
                 ERROR_COUNT=$((ERROR_COUNT + 1))
-                log_warn "  [SKIP] Пропускаем мод $workshop_id (не удалось получить страницу)"
+                log_warn "  [SKIP] Пропускаем мод $workshop_id (файл не найден)"
                 continue
             fi
             
@@ -478,15 +496,10 @@ parse_collection() {
         
         if [ -n "$selected_mod_id" ] && [ "$selected_mod_id" != "unknown" ]; then
             if [ -z "$result_mod_ids" ]; then
-                result_mod_ids="\\$selected_mod_id"
+                result_mod_ids="\\\\$selected_mod_id"
             else
-                result_mod_ids="$result_mod_ids;\\$selected_mod_id"
+                result_mod_ids="$result_mod_ids;\\\\$selected_mod_id"
             fi
-        fi
-        
-        # Небольшая задержка между запросами (если скачиваем новые)
-        if [ ! -f "$MOD_HTML_DIR/$workshop_id/index.html" ] && [ $CACHE_ONLY -eq 0 ]; then
-            sleep 0.5
         fi
     done
     
@@ -516,8 +529,8 @@ parse_collection() {
         echo ""
     fi
     
-    echo "WORKSHOP_IDS=$result_workshop_ids"
-    echo "MOD_IDS=$result_mod_ids"
+    echo "    - WORKSHOP_IDS=$result_workshop_ids"
+    echo "    - MOD_IDS=$result_mod_ids"
     
     # Статистика
     echo ""
@@ -538,22 +551,8 @@ parse_collection() {
     # Сохраняем результаты в файл
     local result_file="result.txt"
     {
-        echo "WORKSHOP_IDS=$result_workshop_ids"
-        echo "MOD_IDS=$result_mod_ids"
-        echo ""
-        echo "# Статистика"
-        echo "# Всего предметов в коллекции: $TOTAL_ITEMS"
-        echo "# Успешно обработано: $PROCESSED_ITEMS"
-        echo "# Использовано кэша: $CACHED_ITEMS"
-        if [ $CACHE_ONLY -eq 0 ]; then
-            echo "# Скачано новых: $DOWNLOADED_ITEMS"
-        else
-            echo "# Режим: ТОЛЬКО КЭШ"
-        fi
-        echo "# Использовано syncmod: ${#syncmod_map[@]}"
-        echo "# Предупреждений: $WARN_COUNT"
-        echo "# Ошибок загрузки: $ERROR_COUNT"
-        echo "# Папка с HTML: $MOD_HTML_DIR/"
+        echo "    - WORKSHOP_IDS=$result_workshop_ids"
+        echo "    - MOD_IDS=$result_mod_ids"
     } > "$result_file"
     
     log_success "Результаты сохранены в: $result_file"
@@ -750,6 +749,3 @@ fi
 
 # Запуск парсинга
 parse_collection "$COLLECTION_URL" "$SYNC_MOD_FILE"
-
-# Очистка временных файлов (опционально)
-# rm -rf "$TEMP_DIR"
