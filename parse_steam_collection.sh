@@ -359,6 +359,54 @@ parse_yaml_config() {
     echo "$collection_url"
 }
 
+# Функция для генерации docker-compose.yml
+generate_docker_compose() {
+    local workshop_ids="$1"
+    local mod_ids="$2"
+    local compose_file="../docker-compose.yml"
+    
+    # Проверяем, что есть данные
+    if [ -z "$workshop_ids" ] || [ -z "$mod_ids" ]; then
+        log_warn "Нет данных для генерации docker-compose.yml"
+        return 1
+    fi
+    
+    # Создаем директорию если её нет
+    mkdir -p "$(dirname "$compose_file")"
+    
+    log_info "Генерация docker-compose.yml в $compose_file"
+    
+    cat > "$compose_file" << EOF
+services:
+  project-zomboid-server:
+    image: danixu86/project-zomboid-dedicated-server:latest-unstable
+    container_name: pz-server
+    restart: unless-stopped
+    ports:
+      - "16261:16261/udp"
+      - "16262:16262/udp"
+      - "27015:27015/tcp"
+    environment:
+      - ADMINPASSWORD=giraffe
+      - PASSWORD=diefast
+      - PUBLIC=false
+      - SERVERNAME=Martians
+      - MEMORY=12288m
+      - WORKSHOP_IDS=$workshop_ids
+      - MOD_IDS=$mod_ids
+    volumes:
+      - ./server-data:/home/steam/Zomboid
+      - ./mods_pz:/home/steam/pz-dedicated/steamapps
+EOF
+    
+    if [ -f "$compose_file" ]; then
+        log_success "docker-compose.yml создан: $compose_file"
+    else
+        log_error "Не удалось создать docker-compose.yml"
+        return 1
+    fi
+}
+
 # Основная функция парсинга
 parse_collection() {
     local collection_url="$1"
@@ -554,7 +602,10 @@ parse_collection() {
         echo "    - WORKSHOP_IDS=$result_workshop_ids"
         echo "    - MOD_IDS=$result_mod_ids"
     } > "$result_file"
-    
+
+    # Генерируем docker-compose.yml
+    generate_docker_compose "$result_workshop_ids" "$result_mod_ids"
+
     log_success "Результаты сохранены в: $result_file"
 }
 
