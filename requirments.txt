@@ -1,0 +1,11 @@
+# requirements.txt для parse_steam_collection.py
+
+# Основные зависимости
+requests>=2.28.0
+beautifulsoup4>=4.11.0
+lxml>=4.9.0
+PyYAML>=6.0
+
+# Дополнительно (опционально, но рекомендуется)
+# soupsieve>=2.3.0  # входит в beautifulsoup4
+# charset-normalizer>=3.0.0  # входит в requests
