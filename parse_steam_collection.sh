@@ -4,6 +4,15 @@
 # Скрипт для парсинга коллекций Steam Workshop
 # Сохраняет каждую страницу мода в modhtml/<workshop_id>/index.html
 # ======================================================
+# Включить дебаг режим
+DEBUG_MODE=0
+
+# Функция для дебаг логирования
+log_debug() {
+    if [ $DEBUG_MODE -eq 1 ]; then
+        echo -e "${CYAN}[DEBUG]${NC} $1" >&2
+    fi
+}
 
 # Конфигурация по умолчанию
 CONFIG_FILE="config.yaml"
@@ -173,27 +182,31 @@ extract_workshop_ids_from_collection() {
     local html=$(cat "$html_file" 2>/dev/null | tr -d '\000')
     local ids=()
     
-    # Ищем только элементы с классом collectionItem (реальные предметы)
-    # Сначала ищем блоки collectionItem
-    local item_blocks=$(echo "$html" | grep -oP 'id="sharedfile_\K\d+' | sort -u 2>/dev/null)
-    for id in $item_blocks; do
+    # Ищем элементы с классом collectionItem и извлекаем ID
+    # Сначала ищем data-publishedfileid внутри collectionItem
+    local ids1=$(echo "$html" | grep -oP 'class="collectionItem".*?data-publishedfileid="\K\d+' | sort -u 2>/dev/null)
+    for id in $ids1; do
         [ -n "$id" ] && ids+=("$id")
     done
     
-    # Если не нашли через id, ищем data-publishedfileid внутри collectionItem
+    # Если не нашли - ищем id="sharedfile_"
     if [ ${#ids[@]} -eq 0 ]; then
-        local ids1=$(echo "$html" | grep -oP 'class="collectionItem".*?data-publishedfileid="\K\d+' | sort -u 2>/dev/null)
-        for id in $ids1; do
+        local ids2=$(echo "$html" | grep -oP 'id="sharedfile_\K\d+' | sort -u 2>/dev/null)
+        for id in $ids2; do
             [ -n "$id" ] && ids+=("$id")
         done
     fi
     
-    # Если все еще пусто - ищем все data-publishedfileid
+    # Если все еще пусто - ищем все data-publishedfileid (но только в контексте коллекции)
     if [ ${#ids[@]} -eq 0 ]; then
-        local ids2=$(echo "$html" | grep -oP 'data-publishedfileid="\K\d+' | sort -u 2>/dev/null)
-        for id in $ids2; do
-            [ -n "$id" ] && ids+=("$id")
-        done
+        # Ищем только те, что внутри collectionChildren
+        local collection_html=$(echo "$html" | grep -oP '(?s)<div class="collectionChildren".*?</div>' | head -1)
+        if [ -n "$collection_html" ]; then
+            local ids3=$(echo "$collection_html" | grep -oP 'data-publishedfileid="\K\d+' | sort -u 2>/dev/null)
+            for id in $ids3; do
+                [ -n "$id" ] && ids+=("$id")
+            done
+        fi
     fi
     
     echo "${ids[@]}"
@@ -213,64 +226,88 @@ extract_mod_id_from_mod_page() {
     
     local mod_ids=()
     
-    # Ищем Mod ID в разных форматах
-    # Формат 1: Mod ID: xxx (в тексте)
-    local ids1=$(echo "$html" | grep -oP 'Mod ID:\s*\K[a-zA-Z0-9_]+' | sort -u 2>/dev/null)
-    for id in $ids1; do
-        [ -n "$id" ] && mod_ids+=("$id")
-    done
+    # Ищем блок с описанием мода
+    local desc_block=$(echo "$html" | grep -oP '(?s)<div class="workshopItemDescription".*?>(.*?)</div>' | head -1)
     
-    # Формат 2: Mod ID: xxx (с тегами)
-    if [ ${#mod_ids[@]} -eq 0 ]; then
-        local ids2=$(echo "$html" | grep -oP 'Mod ID:\s*<[^>]*>\K[a-zA-Z0-9_]+' | sort -u 2>/dev/null)
-        for id in $ids2; do
-            [ -n "$id" ] && mod_ids+=("$id")
+    if [ -n "$desc_block" ]; then
+        # Ищем все строки с "Mod ID:" в блоке описания
+        # Формат: Mod ID: xxx (может быть несколько, включая пути типа 2256623447/firearmmod)
+        local ids=$(echo "$desc_block" | grep -oP 'Mod ID:\s*\K[^\n<]+' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' 2>/dev/null)
+        
+        # Разбиваем каждую найденную строку на отдельные ID
+        for entry in $ids; do
+            # Если в строке есть запятые - разбиваем
+            if echo "$entry" | grep -q ","; then
+                echo "$entry" | sed 's/,/\n/g' | while read -r part; do
+                    part=$(echo "$part" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                    [ -n "$part" ] && mod_ids+=("$part")
+                done
+            else
+                [ -n "$entry" ] && mod_ids+=("$entry")
+            fi
         done
-    fi
-    
-    # Формат 3: В JSON
-    if [ ${#mod_ids[@]} -eq 0 ]; then
-        local ids3=$(echo "$html" | grep -oP '"modid":"\K[a-zA-Z0-9_]+' | sort -u 2>/dev/null)
-        for id in $ids3; do
-            [ -n "$id" ] && mod_ids+=("$id")
-        done
-    fi
-    
-    # Формат 4: В описании (специфичные паттерны)
-    if [ ${#mod_ids[@]} -eq 0 ]; then
-        local ids4=$(echo "$html" | grep -oP 'damnlib|[A-Za-z]+[0-9_]+[A-Za-z]*' | sort -u 2>/dev/null)
+        
+        # Если ничего не нашли через "Mod ID:", ищем в конце описания
+        if [ ${#mod_ids[@]} -eq 0 ]; then
+            # Ищем строки, которые выглядят как "Mod ID:" но могут быть без двоеточия
+            local ids2=$(echo "$desc_block" | grep -oP '(?i)mod id[: ]+\K[^\n<]+' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' 2>/dev/null)
+            for entry in $ids2; do
+                if echo "$entry" | grep -q ","; then
+                    echo "$entry" | sed 's/,/\n/g' | while read -r part; do
+                        part=$(echo "$part" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                        [ -n "$part" ] && mod_ids+=("$part")
+                    done
+                else
+                    [ -n "$entry" ] && mod_ids+=("$entry")
+                fi
+            done
+        fi
+        
+        # Если все еще ничего не нашли - пробуем искать в HTML, но только в контексте "Mod ID:"
+        if [ ${#mod_ids[@]} -eq 0 ]; then
+            local ids3=$(echo "$html" | grep -oP 'Mod ID:\s*\K[a-zA-Z0-9_/]+' | sort -u 2>/dev/null)
+            for id in $ids3; do
+                [ -n "$id" ] && mod_ids+=("$id")
+            done
+        fi
+        
+    else
+        # Если блок описания не найден - ищем во всем HTML
+        log_debug "  Блок workshopItemDescription НЕ найден, ищем во всем HTML"
+        local ids4=$(echo "$html" | grep -oP 'Mod ID:\s*\K[a-zA-Z0-9_/]+' | sort -u 2>/dev/null)
         for id in $ids4; do
             [ -n "$id" ] && mod_ids+=("$id")
         done
+        
+        if [ ${#mod_ids[@]} -eq 0 ]; then
+            local ids5=$(echo "$html" | grep -oP 'Mod ID:\s*<[^>]*>\K[a-zA-Z0-9_/]+' | sort -u 2>/dev/null)
+            for id in $ids5; do
+                [ -n "$id" ] && mod_ids+=("$id")
+            done
+        fi
     fi
     
-    # Фильтруем мусорные ID (слишком короткие или подозрительные)
-    local filtered_ids=()
-    for id in "${mod_ids[@]}"; do
-        # Пропускаем слишком короткие (меньше 3 символов)
-        if [ ${#id} -lt 3 ]; then
-            continue
-        fi
-        # Пропускаем подозрительные паттерны
-        if [[ "$id" =~ ^[0-9]+$ ]] && [ ${#id} -lt 5 ]; then
-            continue
-        fi
-        # Пропускаем явно мусорные
-        if [[ "$id" =~ ^[a-zA-Z]$ ]]; then
-            continue
-        fi
-        filtered_ids+=("$id")
-    done
-    
-    # Если после фильтрации остались ID, используем их
-    if [ ${#filtered_ids[@]} -gt 0 ]; then
-        echo "${filtered_ids[@]}"
-    else
-        # Если все отфильтровались, но были оригинальные - возвращаем оригинальные
-        echo "${mod_ids[@]}"
+    # Удаляем дубликаты
+    if [ ${#mod_ids[@]} -gt 0 ]; then
+        local unique_ids=()
+        for id in "${mod_ids[@]}"; do
+            local found=0
+            for unique in "${unique_ids[@]}"; do
+                if [ "$unique" == "$id" ]; then
+                    found=1
+                    break
+                fi
+            done
+            if [ $found -eq 0 ]; then
+                unique_ids+=("$id")
+            fi
+        done
+        mod_ids=("${unique_ids[@]}")
     fi
+    
+    # Выводим результат
+    echo "${mod_ids[@]}"
 }
-
 # Функция для загрузки/получения страницы мода
 get_mod_page() {
     local workshop_id="$1"
@@ -407,6 +444,63 @@ EOF
     fi
 }
 
+# Функция для проверки и очистки кэша от лишних модов
+cleanup_cache() {
+    local collection_ids=("$@")
+    
+    if [ ! -d "$MOD_HTML_DIR" ]; then
+        return 0
+    fi
+    
+    log_info "Проверка кэша на наличие лишних модов..."
+    
+    local removed_count=0
+    local kept_count=0
+    
+    # Создаем массив для быстрого поиска
+    declare -A id_map
+    for id in "${collection_ids[@]}"; do
+        id_map["$id"]=1
+    done
+    
+    # Проходим по всем папкам в modhtml
+    for dir in "$MOD_HTML_DIR"/*/; do
+        if [ -d "$dir" ]; then
+            # Получаем имя папки (workshop_id)
+            local dir_name=$(basename "$dir")
+            
+            # Пропускаем файлы коллекции
+            if [[ "$dir_name" == collection_* ]]; then
+                continue
+            fi
+            
+            # Проверяем, есть ли этот ID в списке коллекции
+            if [[ -z "${id_map[$dir_name]}" ]]; then
+                # ID нет в коллекции - удаляем
+                log_warn "  🗑️  Удаляем лишний кэш: $dir_name (не найден в коллекции)"
+                rm -rf "$dir"
+                removed_count=$((removed_count + 1))
+            else
+                kept_count=$((kept_count + 1))
+            fi
+        fi
+    done
+    
+    if [ $removed_count -gt 0 ]; then
+        echo ""
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}  📁  ОЧИСТКА КЭША                                         ${NC}"
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}  Удалено лишних папок: $removed_count${NC}"
+        echo -e "${YELLOW}  Оставлено папок: $kept_count${NC}"
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+    else
+        log_info "Лишних модов в кэше не найдено"
+        log_info "  Папок в кэше: $kept_count"
+    fi
+}
+
 # Основная функция парсинга
 parse_collection() {
     local collection_url="$1"
@@ -460,6 +554,8 @@ parse_collection() {
     TOTAL_ITEMS=${#workshop_ids[@]}
     log_info "Найдено предметов в коллекции: $TOTAL_ITEMS"
     
+    cleanup_cache "${workshop_ids[@]}"
+
     # Загружаем syncmod
     declare -A syncmod_map
     if [ -f "$syncmod_file" ] && [ -s "$syncmod_file" ]; then
@@ -726,6 +822,10 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             show_help
             exit 0
+            ;;
+        -d|--debug)
+            DEBUG_MODE=1
+            shift
             ;;
         *)
             if [[ -f "$1" ]]; then
