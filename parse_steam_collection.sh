@@ -444,6 +444,61 @@ EOF
     fi
 }
 
+# Функция для проверки и очистки папки mods_pz/workshop/content/108600 от лишних модов
+cleanup_mods_pz() {
+    local collection_ids=("$@")
+    
+    local MODS_PZ_DIR="mods_pz/workshop/content/108600"
+    
+    if [ ! -d "$MODS_PZ_DIR" ]; then
+        log_info "Папка $MODS_PZ_DIR не найдена, пропускаем очистку"
+        return 0
+    fi
+    
+    log_info "Проверка папки $MODS_PZ_DIR на наличие лишних модов..."
+    
+    local removed_count=0
+    local kept_count=0
+    
+    # Создаем массив для быстрого поиска
+    declare -A id_map
+    for id in "${collection_ids[@]}"; do
+        id_map["$id"]=1
+    done
+    
+    # Проходим по всем папкам в mods_pz/workshop/content/108600
+    for dir in "$MODS_PZ_DIR"/*/; do
+        if [ -d "$dir" ]; then
+            # Получаем имя папки (workshop_id)
+            local dir_name=$(basename "$dir")
+            
+            # Проверяем, есть ли этот ID в списке коллекции
+            if [[ -z "${id_map[$dir_name]}" ]]; then
+                # ID нет в коллекции - удаляем
+                log_warn "  🗑️  Удаляем лишний мод из mods_pz: $dir_name (не найден в коллекции)"
+                rm -rf "$dir"
+                removed_count=$((removed_count + 1))
+            else
+                kept_count=$((kept_count + 1))
+            fi
+        fi
+    done
+    
+    if [ $removed_count -gt 0 ]; then
+        echo ""
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}  📁  ОЧИСТКА mods_pz/workshop/content/108600               ${NC}"
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}  Удалено лишних папок: $removed_count${NC}"
+        echo -e "${YELLOW}  Оставлено папок: $kept_count${NC}"
+        echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+    else
+        log_info "Лишних модов в mods_pz не найдено"
+        log_info "  Папок в mods_pz: $kept_count"
+    fi
+}
+
 # Функция для проверки и очистки кэша от лишних модов
 cleanup_cache() {
     local collection_ids=("$@")
@@ -555,6 +610,8 @@ parse_collection() {
     log_info "Найдено предметов в коллекции: $TOTAL_ITEMS"
     
     cleanup_cache "${workshop_ids[@]}"
+
+    cleanup_mods_pz "${workshop_ids[@]}"
 
     # Загружаем syncmod
     declare -A syncmod_map

@@ -3,5 +3,5 @@ data/*
 workshop-mods/*
 !workshop-mods/.gitkeep
 .env
-modhtml/
+modhtml*
 result.txt
